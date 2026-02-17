@@ -1,8 +1,11 @@
 from pinecone import Pinecone
 import os
 import json
+import logging
 from groq import Groq
 from decouple import config
+
+_logger = logging.getLogger("rag")
 
 # ==============================
 # CONFIG
@@ -23,18 +26,24 @@ pinecone_index = pc.Index(host=PINECONE_HOST)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 def pinecone_search(query: str, top_k: int = 3):
-    # Perform semantic search
-    res = pinecone_index.search(
-        namespace=PINECONE_NAMESPACE,
-        query={
-            "inputs": {"text": query},
-            "top_k": top_k
-        },
-        fields=["text", *[]],  # you can include other fields if needed
-    )
-    # Return list of text results
-    # Parsing based on pinecone_query.py response structure
-    return [hit['fields']['text'] for hit in res['result']['hits']]
+    """Semantic search over Pinecone. Returns list of text snippets or [] on failure."""
+    try:
+        res = pinecone_index.search(
+            namespace=PINECONE_NAMESPACE,
+            query={
+                "inputs": {"text": query},
+                "top_k": top_k
+            },
+            fields=["text", *[]],  # you can include other fields if needed
+        )
+        hits = res.get("result", {}).get("hits", [])
+        return [hit["fields"]["text"] for hit in hits if hit.get("fields", {}).get("text")]
+    except KeyError as e:
+        _logger.warning("Pinecone response structure unexpected: %s", e)
+        return []
+    except Exception as e:
+        _logger.exception("Pinecone search failed: %s", e)
+        raise
 
 # ==============================
 # CHAT HISTORY (TEMPORARY)

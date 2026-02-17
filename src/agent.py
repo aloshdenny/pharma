@@ -1,19 +1,34 @@
 import logging
-import asyncio
-import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Ensure logs are visible
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    stream=sys.stdout,
+    force=True,
+)
+
 from decouple import config
 from livekit.agents import (
     JobContext,
-    JobProcess,
-    WorkerOptions,
+    AgentServer,
     cli,
     llm,
+    room_io,
 )
 from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import openai, deepgram, elevenlabs, silero
+
+# Optional: noise cancellation improves audio quality (pip install livekit-plugins-noise-cancellation)
+try:
+    from livekit.plugins import noise_cancellation
+    _HAS_NOISE_CANCELLATION = True
+except ImportError:
+    _HAS_NOISE_CANCELLATION = False
 
 # Import RAG function
 try:
@@ -22,121 +37,136 @@ except ImportError:
     from rag import pinecone_search
 
 
-# Configure logging
 logger = logging.getLogger("voice-agent")
-logger.setLevel(logging.INFO)
 
-def prewarm(proc: JobProcess):
-    proc.userdata["first_participant_joined"] = False
+# Required env vars for STT, TTS, LLM, RAG - fail fast if missing
+_REQUIRED_KEYS = [
+    ("DEEPGRAM_API_KEY", "STT (speech-to-text)"),
+    ("ELEVEN_API_KEY", "TTS (text-to-speech)"),
+    ("GROQ_API_KEY", "LLM"),
+    ("PINECONE_API_KEY", "RAG search"),
+    ("PINECONE_HOST", "RAG search"),
+    ("PINECONE_NAMESPACE", "RAG search"),
+]
 
-async def entrypoint(ctx: JobContext):
-    logger.info(f"Connecting to room {ctx.room.name}")
-    await ctx.connect()
-    
-    # Context regarding the user
-    initial_ctx = llm.ChatContext()
-    initial_ctx.add_message(
-        content="You are a helpful pharmacy assistant. You can answer questions about drug rejections, insurance, and more. You have access to a database of past rejection calls.",
-        role="system",
-    )
 
-    # 1. STT - Deepgram
-    stt = deepgram.STT(
-        model="nova-2-general", 
-        language="en-US",
-    )
+def _validate_env():
+    """Validate required API keys at startup. Exits with clear error if any missing."""
+    missing = []
+    for key, desc in _REQUIRED_KEYS:
+        val = config(key, default="")
+        if not val or not str(val).strip():
+            missing.append(f"  {key} ({desc})")
+    if missing:
+        msg = "Missing required env vars. Set them in .env:\n" + "\n".join(missing)
+        print(f"[PHARMA] >>> ERROR: {msg}", flush=True)
+        raise SystemExit(1)
 
-    # 2. LLM - Groq (via OpenAI plugin)
-    llm_plugin = openai.LLM(
-        base_url="https://api.groq.com/openai/v1",
-        api_key=config("GROQ_API_KEY"),
-        model="llama-3.3-70b-versatile",
-    )
 
-    # 3. TTS - ElevenLabs
-    tts = elevenlabs.TTS(
-        api_key=config("ELEVEN_API_KEY"),
-        voice_id="TX3LPaxmHKxFdv7VOQHJ",
-    )
-    
-    # 4. VAD - Silero
-    vad = silero.VAD.load()
+server = AgentServer()
 
-    # 4. RAG Tool
-    class PharmacyTools:
-        @llm.function_tool(description="Search for relevant pharmacy and PBM rejection call records to find context about drug rejections, insurance plans, and PBM policies.")
-        def search_records(self, query: str, top_k: int = 3):
-            logger.info(f"Searching Pinecone for: {query}")
-            results = pinecone_search(query, top_k)
-            if not results:
-                return "No relevant records found."
-            return "\n\n".join(results)
 
-    pharmacy_tools = PharmacyTools()
+def prewarm(proc):
+    """Prewarm VAD for faster startup."""
+    proc.userdata["vad"] = silero.VAD.load()
 
-    # 5. Agent & Session
-    class PharmacyAgent(Agent):
-        def stt_node(self, audio, model_settings):
-            async def _audio_wrapper(audio_stream):
-                frame_count = 0
-                async for frame in audio_stream:
-                    frame_count += 1
-                    if frame_count % 50 == 0:
-                        print(f"DEBUG: Received {frame_count} audio frames", end="\r")
-                    yield frame
 
-            async def _logging_stt_node(audio, model_settings):
-                async for event in super(PharmacyAgent, self).stt_node(_audio_wrapper(audio), model_settings):
-                    if event.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
-                        print(f"🎤 STT: {event.alternatives[0].text}")
-                    elif event.type == stt.SpeechEventType.INTERIM_TRANSCRIPT:
-                        print(f"   stt: {event.alternatives[0].text}", end="\r")
-                    yield event
-            return _logging_stt_node(audio, model_settings)
+server.setup_fnc = prewarm
 
-        def llm_node(self, chat_ctx, tools, model_settings):
-            async def _logging_llm_node(chat_ctx, tools, model_settings):
-                print(f"🧠 LLM: Processing query...")
-                full_response = ""
-                async for chunk in super(PharmacyAgent, self).llm_node(chat_ctx, tools, model_settings):
-                    if isinstance(chunk, llm.ChatChunk) and chunk.choices:
-                        content = chunk.choices[0].delta.content
-                        if content:
-                            full_response += content
-                            print(content, end="", flush=True)
-                    yield chunk
-                print("\n") # Newline after LLM stream
-            return _logging_llm_node(chat_ctx, tools, model_settings)
 
-        def tts_node(self, text, model_settings):
-            async def _logging_tts_node(text, model_settings):
-                print(f"🗣️  TTS: Synthesizing...")
-                async for frame in super(PharmacyAgent, self).tts_node(text, model_settings):
-                    yield frame
-            return _logging_tts_node(text, model_settings)
+@server.rtc_session(agent_name="pharmacy-agent")
+async def pharmacy_agent(ctx: JobContext):
+    print(f"[PHARMA] >>> Entrypoint called for room {ctx.room.name}", flush=True)
+    logger.info(f"Starting agent for room {ctx.room.name}")
 
-    agent = PharmacyAgent(
-        instructions="You are a helpful pharmacy assistant.",
-        stt=stt,
-        llm=llm_plugin,
-        tts=tts,
-        vad=vad,
-        chat_ctx=initial_ctx,
-        tools=[pharmacy_tools.search_records],
-        turn_detection="vad", # Use VAD for turn detection
-    )
-    
-    session = AgentSession(
-        allow_interruptions=True,
-    )
-    
-    # Start the session
-    # AgentSession.start attaches to the room
-    await session.start(agent, room=ctx.room)
-    
-    # Greeting (Agent doesn't have say(), using session capabilities if possible, or just wait for user)
-    # If we want to greet, we might need to push a message to LLM or TTS directly.
-    # For now, we wait for user.
+    try:
+        initial_ctx = llm.ChatContext()
+        initial_ctx.add_message(
+            content="You are a helpful pharmacy assistant. You can answer questions about drug rejections, insurance, and more. You have access to a database of past rejection calls.",
+            role="system",
+        )
+
+        class PharmacyTools:
+            @llm.function_tool(
+                description="Search for relevant pharmacy and PBM rejection call records to find context about drug rejections, insurance plans, and PBM policies."
+            )
+            def search_records(self, query: str, top_k: int = 3):
+                logger.info(f"Searching Pinecone for: {query}")
+                try:
+                    results = pinecone_search(query, top_k)
+                except Exception as e:
+                    logger.exception("RAG pinecone_search failed")
+                    print(f"[PHARMA] >>> RAG ERROR: {e}", flush=True)
+                    return f"Search failed: {e}. Please try rephrasing or ask without database lookup."
+                if not results:
+                    return "No relevant records found."
+                return "\n\n".join(results)
+
+        pharmacy_tools = PharmacyTools()
+        vad = ctx.proc.userdata.get("vad") or silero.VAD.load()
+
+        session = AgentSession(
+            stt=deepgram.STT(
+                model="nova-2-general",
+                language="en-US",
+                api_key=config("DEEPGRAM_API_KEY"),
+            ),
+            llm=openai.LLM(
+                base_url="https://api.groq.com/openai/v1",
+                api_key=config("GROQ_API_KEY"),
+                model="llama-3.3-70b-versatile",
+            ),
+            tts=elevenlabs.TTS(
+                api_key=config("ELEVEN_API_KEY"),
+                voice_id="TX3LPaxmHKxFdv7VOQHJ",
+            ),
+            vad=vad,
+            turn_detection="vad",
+            allow_interruptions=True,
+            tools=[pharmacy_tools.search_records],
+        )
+
+        class PharmacyAgent(Agent):
+            async def on_enter(self) -> None:
+                """Greet immediately via direct TTS - publishes audio track for playground."""
+                print("[PHARMA] >>> on_enter called, saying greeting", flush=True)
+                self.session.say("Hello! I'm your pharmacy assistant. How can I help you today?")
+
+        agent = PharmacyAgent(
+            instructions="You are a helpful pharmacy assistant.",
+            chat_ctx=initial_ctx,
+        )
+
+        room_opts = room_io.RoomOptions()
+        if _HAS_NOISE_CANCELLATION:
+            room_opts = room_io.RoomOptions(
+                audio_input=room_io.AudioInputOptions(
+                    noise_cancellation=noise_cancellation.BVC(),
+                ),
+            )
+
+        # session.start() connects to the room automatically - do NOT call ctx.connect()
+        # (see livekit agents basic_agent.py and docs: AgentSession connects when started)
+        print("[PHARMA] >>> Starting session (connects to room automatically)...", flush=True)
+        await session.start(
+            agent=agent,
+            room=ctx.room,
+            room_options=room_opts,
+        )
+        print(f"[PHARMA] >>> Agent session started for room {ctx.room.name}", flush=True)
+        logger.info(f"Agent session started for room {ctx.room.name}")
+    except Exception as e:
+        print(f"[PHARMA] >>> ERROR: {e}", flush=True)
+        logger.exception("Agent failed")
+        raise
+
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
+    if len(sys.argv) > 1 and sys.argv[1] == "download-files":
+        print("Downloading Silero VAD model...", flush=True)
+        silero.VAD.load()
+        print("Done.", flush=True)
+        sys.exit(0)
+    _validate_env()
+    print("[PHARMA] >>> Env validation OK (STT, TTS, LLM, RAG keys present)", flush=True)
+    cli.run_app(server)
