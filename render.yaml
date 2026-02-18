@@ -1,0 +1,28 @@
+services:
+  - type: worker
+    name: pharmacy-agent
+    env: docker
+    plan: starter
+    scale: 1
+    # Check your Dockerfile location
+    dockerfilePath: Dockerfile
+    dockerContext: .
+    envVars:
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: ELEVEN_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: PINECONE_API_KEY
+        sync: false
+      - key: PINECONE_HOST
+        sync: false
+      - key: PINECONE_NAMESPACE
+        sync: false

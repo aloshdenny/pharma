@@ -1,0 +1,11 @@
+python-dotenv==1.0.1
+livekit>=1.0.25
+livekit-agents>=1.4.1
+livekit-plugins-deepgram
+livekit-plugins-openai
+livekit-plugins-elevenlabs
+livekit-plugins-silero
+pinecone-client
+openai
+python-decouple
+requests

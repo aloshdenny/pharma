@@ -1,0 +1,15 @@
+{
+    "devCommand": "uvicorn playground.server:app --reload",
+    "builds": [
+        {
+            "src": "playground/server.py",
+            "use": "@vercel/python"
+        }
+    ],
+    "routes": [
+        {
+            "src": "/(.*)",
+            "dest": "playground/server.py"
+        }
+    ]
+}
