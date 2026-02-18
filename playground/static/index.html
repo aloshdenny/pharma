@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pharmacy Agent Playground</title>
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.9.1/dist/livekit-client.umd.js"></script>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #242736;
+      --border: #2e3348;
+      --accent: #6c5ce7;
+      --accent-hover: #7c6df7;
+      --green: #00b894;
+      --red: #e74c3c;
+      --orange: #f39c12;
+      --text: #e4e6ef;
+      --text-muted: #8b8fa3;
+      --radius: 12px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ─────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 28px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    header .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 18px;
+      font-weight: 700;
+    }
+    header .logo .pill {
+      background: var(--accent);
+      color: #fff;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 99px;
+      font-weight: 600;
+    }
+    header .meta {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    /* ── Main layout ────────────────────────────────── */
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 20px;
+      gap: 28px;
+    }
+
+    /* ── Agent card ──────────────────────────────────── */
+    .agent-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 36px 44px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+      min-width: 380px;
+      max-width: 480px;
+      width: 100%;
+    }
+
+    /* Animated orb */
+    .orb-wrap {
+      position: relative;
+      width: 120px;
+      height: 120px;
+    }
+    .orb {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, var(--accent), #3a2d8e);
+      box-shadow: 0 0 40px rgba(108, 92, 231, 0.25);
+      transition: transform .3s, box-shadow .3s;
+    }
+    .orb.speaking {
+      animation: pulse 0.8s ease-in-out infinite alternate;
+      box-shadow: 0 0 60px rgba(108, 92, 231, 0.55);
+    }
+    @keyframes pulse {
+      0%   { transform: scale(1);    }
+      100% { transform: scale(1.12); }
+    }
+    .orb.idle {
+      animation: breathe 3s ease-in-out infinite alternate;
+    }
+    @keyframes breathe {
+      0%   { transform: scale(1);     box-shadow: 0 0 40px rgba(108,92,231,.25); }
+      100% { transform: scale(1.04);  box-shadow: 0 0 50px rgba(108,92,231,.35); }
+    }
+
+    .status-label {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .status-label.connecting { color: var(--orange); }
+    .status-label.connected  { color: var(--green);  }
+    .status-label.speaking   { color: var(--accent); }
+    .status-label.error      { color: var(--red);    }
+    .status-label.ended      { color: var(--text-muted); }
+
+    .agent-name {
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    .room-info {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-align: center;
+      line-height: 1.6;
+    }
+
+    /* ── Buttons ─────────────────────────────────────── */
+    .btn-row {
+      display: flex;
+      gap: 12px;
+    }
+    button {
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 10px 24px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      transition: background .2s, opacity .2s;
+    }
+    button:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .btn-danger {
+      background: var(--red);
+      color: #fff;
+    }
+    .btn-danger:hover:not(:disabled) { background: #c0392b; }
+    .btn-muted {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-muted:hover:not(:disabled) { background: var(--border); }
+
+    /* ── Audio visualizer ───────────────────────────── */
+    .visualizer {
+      display: flex;
+      align-items: flex-end;
+      gap: 3px;
+      height: 40px;
+      margin-top: 4px;
+    }
+    .visualizer .bar {
+      width: 4px;
+      background: var(--accent);
+      border-radius: 2px;
+      min-height: 4px;
+      transition: height 0.08s ease;
+    }
+
+    /* ── Chat log ────────────────────────────────────── */
+    .chat-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      width: 100%;
+      max-width: 480px;
+      min-width: 380px;
+      max-height: 260px;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .chat-panel::-webkit-scrollbar {
+      width: 6px;
+    }
+    .chat-panel::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+    .chat-msg {
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 8px 12px;
+      border-radius: 8px;
+      max-width: 90%;
+    }
+    .chat-msg.agent {
+      background: var(--surface2);
+      align-self: flex-start;
+    }
+    .chat-msg.user {
+      background: var(--accent);
+      color: #fff;
+      align-self: flex-end;
+    }
+    .chat-msg .role {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+      color: var(--text-muted);
+    }
+    .chat-msg.user .role { color: rgba(255,255,255,.7); }
+
+    /* ── Streaming cursor ───────────────────────────── */
+    .chat-msg .body { display: inline; white-space: pre-wrap; word-break: break-word; }
+    .chat-msg.streaming .body::after {
+      content: "▋";
+      display: inline-block;
+      margin-left: 1px;
+      animation: blink .7s step-start infinite;
+      color: var(--accent);
+      opacity: .9;
+    }
+    .chat-msg.user.streaming .body::after { color: rgba(255,255,255,.8); }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+    /* ── Timer ────────────────────────────────────────── */
+    .timer {
+      font-variant-numeric: tabular-nums;
+      font-size: 14px;
+      color: var(--text-muted);
+    }
+
+    /* ── Footer ──────────────────────────────────────── */
+    footer {
+      text-align: center;
+      padding: 12px;
+      font-size: 12px;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <svg width="24" height="24" fill="none" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4" stroke="#6c5ce7" stroke-width="2"/><path d="M12 8v8M8 12h8" stroke="#6c5ce7" stroke-width="2" stroke-linecap="round"/></svg>
+    Pharmacy Agent <span class="pill">VOICE</span>
+  </div>
+  <div class="meta" id="serverUrl"></div>
+</header>
+
+<main>
+  <div class="agent-card">
+    <div class="agent-name">Pharmacy Insurance Agent</div>
+
+    <div class="orb-wrap">
+      <div class="orb idle" id="orb"></div>
+    </div>
+
+    <div class="visualizer" id="visualizer"></div>
+
+    <div class="status-label connecting" id="statusLabel">Initializing…</div>
+
+    <div class="timer" id="timer">00:00</div>
+
+    <div class="room-info" id="roomInfo">—</div>
+
+    <div class="btn-row">
+      <button class="btn-muted" id="btnMute" disabled>🎙 Mute</button>
+      <button class="btn-danger" id="btnEnd" disabled>End Call</button>
+      <button class="btn-primary" id="btnNew">New Call</button>
+    </div>
+  </div>
+
+  <div class="chat-panel" id="chatPanel">
+    <div style="color: var(--text-muted); font-size: 12px; text-align: center;">
+      Transcript will appear here…
+    </div>
+  </div>
+</main>
+
+<script>
+const { Room, RoomEvent, Track, ConnectionState } = LivekitClient;
+
+// ── DOM ──
+const orb = document.getElementById("orb");
+const statusLabel = document.getElementById("statusLabel");
+const roomInfoEl = document.getElementById("roomInfo");
+const serverUrlEl = document.getElementById("serverUrl");
+const chatPanel = document.getElementById("chatPanel");
+const timerEl = document.getElementById("timer");
+const btnMute = document.getElementById("btnMute");
+const btnEnd = document.getElementById("btnEnd");
+const btnNew = document.getElementById("btnNew");
+const vizEl = document.getElementById("visualizer");
+
+let room = null;
+let timerInterval = null;
+let startTime = null;
+let muted = false;
+let localStream = null;   // raw mic MediaStream we acquire ourselves
+let audioCtx = null;
+let analyser = null;
+let vizBars = [];
+
+// ── Streaming transcript state ──
+// Map of segmentId → { el, role } for in-progress (non-final) segments
+const _streamingSegs = new Map();
+
+// Create visualizer bars
+for (let i = 0; i < 24; i++) {
+  const bar = document.createElement("div");
+  bar.className = "bar";
+  bar.style.height = "4px";
+  vizEl.appendChild(bar);
+  vizBars.push(bar);
+}
+
+// ── Helpers ──
+function setStatus(text, cls) {
+  statusLabel.textContent = text;
+  statusLabel.className = "status-label " + cls;
+}
+
+function _removePlaceholder() {
+  const placeholder = chatPanel.querySelector("div[style]");
+  if (placeholder) placeholder.remove();
+}
+
+// Create or update a streaming segment bubble.
+// segId: unique segment id from LiveKit
+// role: "agent" | "user"
+// text: current accumulated text
+// final: true when segment is complete
+function upsertSegment(segId, role, text, final) {
+  _removePlaceholder();
+  let entry = _streamingSegs.get(segId);
+
+  if (!entry) {
+    // First chunk — create the bubble
+    const div = document.createElement("div");
+    div.className = "chat-msg " + (role === "agent" ? "agent" : "user") + " streaming";
+    div.dataset.segId = segId;
+    div.innerHTML =
+      '<div class="role">' + (role === "agent" ? "Agent" : "You") + "</div>" +
+      '<span class="body"></span>';
+    chatPanel.appendChild(div);
+    entry = { el: div, role };
+    _streamingSegs.set(segId, entry);
+  }
+
+  // Update text content in the body span (safe — never sets innerHTML with user text)
+  entry.el.querySelector(".body").textContent = text;
+
+  if (final) {
+    // Remove streaming cursor
+    entry.el.classList.remove("streaming");
+    _streamingSegs.delete(segId);
+  }
+
+  chatPanel.scrollTop = chatPanel.scrollHeight;
+}
+
+// Legacy helper used for non-transcription messages (e.g. system notices)
+function addChatMsg(role, text) {
+  _removePlaceholder();
+  const div = document.createElement("div");
+  div.className = "chat-msg " + (role === "agent" ? "agent" : "user");
+  div.innerHTML =
+    '<div class="role">' + (role === "agent" ? "Agent" : "You") + "</div>" +
+    '<span class="body">' + escapeHtml(text) + "</span>";
+  chatPanel.appendChild(div);
+  chatPanel.scrollTop = chatPanel.scrollHeight;
+}
+
+function escapeHtml(t) {
+  const d = document.createElement("div");
+  d.textContent = t;
+  return d.innerHTML;
+}
+
+function startTimer() {
+  startTime = Date.now();
+  timerInterval = setInterval(() => {
+    const s = Math.floor((Date.now() - startTime) / 1000);
+    const m = Math.floor(s / 60);
+    timerEl.textContent = String(m).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+  }, 500);
+}
+function stopTimer() {
+  clearInterval(timerInterval);
+  timerInterval = null;
+}
+
+// ── Audio visualizer (uses local mic stream) ──
+function startVisualizer(stream) {
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 64;
+    source.connect(analyser);
+    drawViz();
+  } catch (e) { console.warn("Visualizer failed:", e); }
+}
+
+function drawViz() {
+  if (!analyser) return;
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(data);
+  for (let i = 0; i < vizBars.length; i++) {
+    const val = data[i] || 0;
+    vizBars[i].style.height = Math.max(4, (val / 255) * 40) + "px";
+  }
+  requestAnimationFrame(drawViz);
+}
+
+function stopVisualizer() {
+  analyser = null;
+  if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+  vizBars.forEach(b => (b.style.height = "4px"));
+}
+
+// ── Acquire mic explicitly (handles secure-context issue) ──
+async function acquireMic() {
+  // Check secure context
+  if (!window.isSecureContext) {
+    throw new Error(
+      "Microphone requires HTTPS. Open this page at http://localhost:" +
+      location.port + " (not 127.0.0.1 or an IP address)."
+    );
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error(
+      "Browser does not support getUserMedia. Use Chrome/Edge/Firefox on localhost or HTTPS."
+    );
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  return stream;
+}
+
+// Stop all tracks on a MediaStream
+function releaseMic() {
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+  }
+}
+
+// ── Attach remote audio with autoplay workaround ──
+function attachAudioTrack(track) {
+  // Remove any previous agent audio element
+  const prev = document.getElementById("agent-audio");
+  if (prev) prev.remove();
+
+  const el = track.attach();
+  el.id = "agent-audio";
+  el.autoplay = true;
+  el.playsInline = true;
+  el.volume = 1.0;
+  el.muted = false;          // ensure not muted
+  el.style.display = "none"; // hidden element
+  document.body.appendChild(el);
+
+  // Force play — some browsers block autoplay
+  const playPromise = el.play();
+  if (playPromise) {
+    playPromise.catch(() => {
+      // Retry on next user gesture
+      const resume = () => {
+        el.play().catch(() => {});
+        document.removeEventListener("click", resume);
+        document.removeEventListener("keydown", resume);
+      };
+      document.addEventListener("click", resume, { once: true });
+      document.addEventListener("keydown", resume, { once: true });
+      console.warn("Autoplay blocked — audio will start on next click/keypress");
+    });
+  }
+}
+
+// ── Connect ──
+async function connect() {
+  await disconnect();
+
+  setStatus("Requesting microphone…", "connecting");
+  btnNew.disabled = true;
+
+  // 1. Acquire mic FIRST — fail fast with a clear message
+  try {
+    localStream = await acquireMic();
+  } catch (e) {
+    setStatus("Mic error: " + e.message, "error");
+    btnNew.disabled = false;
+    return;
+  }
+
+  // Start visualizer on local mic immediately
+  startVisualizer(localStream);
+
+  setStatus("Fetching token…", "connecting");
+
+  let data;
+  try {
+    const res = await fetch("/api/token");
+    data = await res.json();
+    if (data.error) throw new Error(data.error);
+  } catch (e) {
+    setStatus("Token error: " + e.message, "error");
+    btnNew.disabled = false;
+    releaseMic();
+    return;
+  }
+
+  serverUrlEl.textContent = data.url;
+  roomInfoEl.innerHTML = "Room: <b>" + data.room + "</b> &middot; Identity: <b>" + data.identity + "</b>";
+
+  setStatus("Connecting…", "connecting");
+
+  room = new Room({
+    adaptiveStream: true,
+    dynacast: true,
+    audioCaptureDefaults: { autoGainControl: true, noiseSuppression: true },
+  });
+
+  // ── Room events ──
+  room.on(RoomEvent.Connected, () => {
+    setStatus("Connected — waiting for agent…", "connected");
+    btnEnd.disabled = false;
+    btnMute.disabled = false;
+    startTimer();
+  });
+
+  room.on(RoomEvent.Disconnected, () => {
+    setStatus("Disconnected", "ended");
+    cleanup();
+  });
+
+  room.on(RoomEvent.ParticipantConnected, (participant) => {
+    if (participant.identity && participant.identity !== data.identity) {
+      setStatus("Agent joined", "connected");
+    }
+  });
+
+  // ── Agent audio track ──
+  room.on(RoomEvent.TrackSubscribed, (track, pub, participant) => {
+    if (track.kind === Track.Kind.Audio && participant.identity !== room.localParticipant.identity) {
+      attachAudioTrack(track);
+    }
+  });
+
+  room.on(RoomEvent.TrackUnsubscribed, (track) => {
+    if (track.kind === Track.Kind.Audio) {
+      track.detach().forEach(el => el.remove());
+    }
+  });
+
+  // ── Streaming transcription ──
+  // LiveKit emits TranscriptionReceived for BOTH non-final (streaming) and final
+  // segments. We upsert each segment by its id so text appears word-by-word.
+  room.on(RoomEvent.TranscriptionReceived, (segments, participant) => {
+    const isAgent = participant && participant.identity !== room.localParticipant.identity;
+    const role = isAgent ? "agent" : "user";
+
+    for (const seg of segments) {
+      const text = (seg.text || "").trim();
+      if (!text) continue;
+
+      // Use seg.id as the stable key; fall back to a timestamp-based key
+      const segId = seg.id || (role + "-" + Date.now());
+      upsertSegment(segId, role, text, !!seg.final);
+
+      if (isAgent) {
+        orb.classList.remove("idle");
+        orb.classList.add("speaking");
+        setStatus("Agent speaking…", "speaking");
+        clearTimeout(window._orbTimeout);
+        if (seg.final) {
+          window._orbTimeout = setTimeout(() => {
+            orb.classList.remove("speaking");
+            orb.classList.add("idle");
+            if (room && room.state === ConnectionState.Connected) setStatus("Listening…", "connected");
+          }, 1500);
+        }
+      }
+    }
+  });
+
+  // ── Active speakers → orb animation ──
+  room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+    const agentSpeaking = speakers.some(s => s.identity !== room.localParticipant.identity);
+    if (agentSpeaking) {
+      orb.classList.remove("idle");
+      orb.classList.add("speaking");
+      setStatus("Agent speaking…", "speaking");
+    } else {
+      orb.classList.remove("speaking");
+      orb.classList.add("idle");
+      if (room && room.state === ConnectionState.Connected) setStatus("Listening…", "connected");
+    }
+  });
+
+  try {
+    await room.connect(data.url, data.token);
+    // Publish mic
+    await room.localParticipant.setMicrophoneEnabled(true);
+  } catch (e) {
+    setStatus("Connection failed: " + e.message, "error");
+    btnNew.disabled = false;
+    releaseMic();
+    return;
+  }
+
+  btnNew.disabled = false;
+}
+
+function cleanup() {
+  stopTimer();
+  stopVisualizer();
+  releaseMic();
+  // Clear any in-progress streaming segments
+  _streamingSegs.clear();
+  // Remove agent audio element
+  const agentEl = document.getElementById("agent-audio");
+  if (agentEl) agentEl.remove();
+  btnEnd.disabled = true;
+  btnMute.disabled = true;
+  muted = false;
+  btnMute.textContent = "🎙 Mute";
+  orb.classList.remove("speaking");
+  orb.classList.add("idle");
+}
+
+async function disconnect() {
+  if (room) {
+    try { await room.disconnect(); } catch (_) {}
+    room = null;
+  }
+  cleanup();
+}
+
+// ── Button handlers ──
+btnEnd.addEventListener("click", async () => {
+  setStatus("Ending call…", "ended");
+  await disconnect();
+  setStatus("Call ended", "ended");
+});
+
+btnNew.addEventListener("click", () => {
+  chatPanel.innerHTML = '<div style="color: var(--text-muted); font-size: 12px; text-align: center;">Transcript will appear here…</div>';
+  timerEl.textContent = "00:00";
+  _streamingSegs.clear();
+  connect();
+});
+
+// ── Mute / Unmute — toggle the actual mic track, don't re-acquire ──
+btnMute.addEventListener("click", async () => {
+  if (!room || !room.localParticipant) return;
+  try {
+    muted = !muted;
+    // Find the published mic track and mute/unmute it directly
+    const micPub = room.localParticipant.getTrackPublication(Track.Source.Microphone);
+    if (micPub && micPub.track) {
+      if (muted) {
+        await micPub.track.mute();
+      } else {
+        await micPub.track.unmute();
+      }
+    } else {
+      // Fallback: re-enable microphone (will re-acquire if needed)
+      await room.localParticipant.setMicrophoneEnabled(!muted);
+    }
+    btnMute.textContent = muted ? "🔇 Unmute" : "🎙 Mute";
+  } catch (e) {
+    console.error("Mute toggle failed:", e);
+    // Revert state
+    muted = !muted;
+  }
+});
+
+// ── Auto-connect on load ──
+window.addEventListener("load", () => {
+  connect();
+});
+</script>
+
+</body>
+</html>

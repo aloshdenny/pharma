@@ -30,11 +30,8 @@ try:
 except ImportError:
     _HAS_NOISE_CANCELLATION = False
 
-# Import RAG function
-try:
-    from src.rag import pinecone_search
-except ImportError:
-    from rag import pinecone_search
+
+from rag import pinecone_search
 
 
 logger = logging.getLogger("voice-agent")
@@ -81,8 +78,36 @@ async def pharmacy_agent(ctx: JobContext):
 
     try:
         initial_ctx = llm.ChatContext()
+        
+        # New Pharmacy Insurance Approval System Prompt
+        system_prompt = (
+            "You are a pharmacy insurance approval agent. Your goal is to check if a patient is cleared "
+            "to use a specific class of drugs based on their insurance tier. "
+            "When a patient name or ID is provided, look up their insurance tier and verify if the requested "
+            "drug class is allowed.\n\n"
+            "Here is the database you have access to:\n"
+            "Insurance Tiers:\n"
+            "- Basic Tier (TIER_BASIC): Allowed drug classes: Antipyretics, Analgesics, Antibiotics.\n"
+            "- Premium Tier (TIER_PREMIUM): Allowed drug classes: Antipyretics, Analgesics, Antibiotics, "
+            "Antihypertensives, Antidiabetics, Cardiac Drugs, Oncology Drugs, Biologics.\n\n"
+            "Patients:\n"
+            "- P001: Rahul Menon (TIER_BASIC)\n"
+            "- P002: Anita Sharma (TIER_PREMIUM)\n"
+            "- P003: Vikram Iyer (TIER_BASIC)\n"
+            "- P004: Neha Kapoor (TIER_PREMIUM)\n"
+            "- P005: Suresh Nair (TIER_BASIC)\n\n"
+            "Procedures:\n"
+            "1. Identify the patient using their Name or ID.\n"
+            "2. Identify the drug class being requested.\n"
+            "3. Check if the drug class is in the list of allowed classes for the patient's tier.\n"
+            "4. Inform the user whether the drug is approved or if it's rejected due to tier constraints.\n\n"
+            "Be professional, clear, and efficient."
+            "Don't use short forms like e.g or i.e etc. Use fullforms, for example, milligram instead of mg, milliletre instead of ml, and so on." \
+            "Keep sentences short and to the point, as if you are speaking to a patient on the phone. Do not provide long explanations or use bullet points. Only say what is necessary for the current turn, and ask one question at a time if you need more information."
+        )
+        
         initial_ctx.add_message(
-            content="You are a helpful pharmacy assistant. You can answer questions about drug rejections, insurance, and more. You have access to a database of past rejection calls.",
+            content=system_prompt,
             role="system",
         )
 
@@ -107,7 +132,7 @@ async def pharmacy_agent(ctx: JobContext):
 
         session = AgentSession(
             stt=deepgram.STT(
-                model="nova-2-general",
+                model="nova-3",
                 language="en-US",
                 api_key=config("DEEPGRAM_API_KEY"),
             ),
@@ -118,7 +143,7 @@ async def pharmacy_agent(ctx: JobContext):
             ),
             tts=elevenlabs.TTS(
                 api_key=config("ELEVEN_API_KEY"),
-                voice_id="TX3LPaxmHKxFdv7VOQHJ",
+                voice_id="EzoxNTKsg4JNN7wxAgut",
             ),
             vad=vad,
             turn_detection="vad",
@@ -130,10 +155,10 @@ async def pharmacy_agent(ctx: JobContext):
             async def on_enter(self) -> None:
                 """Greet immediately via direct TTS - publishes audio track for playground."""
                 print("[PHARMA] >>> on_enter called, saying greeting", flush=True)
-                self.session.say("Hello! I'm your pharmacy assistant. How can I help you today?")
+                self.session.say("Hello! This is a pharmacy insurance approval agent. Please provide the patient's name or ID and the drug class you're inquiring about.")
 
         agent = PharmacyAgent(
-            instructions="You are a helpful pharmacy assistant.",
+            instructions="You are a professional pharmacy insurance approval agent. Verify drug coverage based on patient tiers.",
             chat_ctx=initial_ctx,
         )
 
