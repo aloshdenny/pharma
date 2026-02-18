@@ -12,7 +12,6 @@ A LiveKit voice agent for pharmacy insurance approval. Checks whether a patient 
 ## Prerequisites
 
 - **Python** 3.10–3.14
-- **Poetry** (recommended) or pip
 - API keys for:
   - [LiveKit Cloud](https://cloud.livekit.io/) (free tier works)
   - [Deepgram](https://deepgram.com/) (STT)
@@ -28,16 +27,18 @@ A LiveKit voice agent for pharmacy insurance approval. Checks whether a patient 
 
 ```bash
 cd pharma
-poetry install
-```
-
-Or with pip:
-
-```bash
 pip install -r requirements.txt
 ```
 
 ### 2. Environment variables
+
+Create a `.env` file in the project root:
+
+```env
+touch .env
+```
+
+### 3. Environment variables
 
 Create a `.env` file in the project root:
 
@@ -62,10 +63,10 @@ PINECONE_HOST=https://your-index.svc.region.pinecone.io
 PINECONE_NAMESPACE=your_namespace
 ```
 
-### 3. Pre-download Silero VAD model (optional, speeds up first start)
+### 4. Pre-download Silero VAD model (optional, speeds up first start)
 
 ```bash
-poetry run python src/agent.py download-files
+python src/agent.py download-files
 ```
 
 ---
@@ -77,7 +78,7 @@ Two processes need to run simultaneously — the **agent** and the **playground 
 ### Terminal 1 — Agent
 
 ```bash
-poetry run python src/agent.py dev
+python src/agent.py dev
 ```
 
 You should see:
@@ -93,13 +94,13 @@ Keep this running. The agent will handle any room that dispatches `pharmacy-agen
 ### Terminal 2 — Playground UI
 
 ```bash
-poetry run python playground/server.py
+python playground/server.py
 ```
 
 Or equivalently:
 
 ```bash
-poetry run python scripts/generate_token.py --serve
+python scripts/generate_token.py --serve
 ```
 
 Then open **http://localhost:8080** in your browser.
@@ -119,7 +120,7 @@ The playground will:
 If you prefer to use the [LiveKit Agents Playground](https://agents-playground.livekit.io/) instead:
 
 ```bash
-poetry run python scripts/generate_token.py
+python scripts/generate_token.py
 ```
 
 Copy the printed URL and token into the playground's **Manual** tab.
