@@ -71,7 +71,29 @@ python src/agent.py download-files
 
 ---
 
-## Running
+## Deploying to Vercel
+
+The frontend (UI) and token server are stateless and fit perfectly on Vercel.
+
+1.  **Push your code** to GitHub.
+2.  **Import the project** in Vercel.
+3.  **Configure Build Settings**:
+    -   **Framework Preset**: Other
+    -   **Build Command**: (Leave empty)
+    -   **Deepgram/ElevenLabs keys**: NOT needed on Vercel (only on the Agent).
+    -   **Install Command**: `pip install -r requirements-vercel.txt`
+        > **CRITICAL**: You MUST set this in the Vercel Project Settings. If you leave it as default, Vercel will try to install `requirements.txt` which contains heavy libraries (Torch) that will cause the build to fail or timeout.
+    -   **Output Directory**: `.` (default)
+4.  **Environment Variables**:
+    Add the following variables in Vercel Project Settings:
+    -   `LIVEKIT_URL`
+    -   `LIVEKIT_API_KEY`
+    -   `LIVEKIT_API_SECRET`
+5.  **Deploy**.
+
+---
+
+## Running Locally
 
 Two processes need to run simultaneously — the **agent** and the **playground server**. Open two terminals in the `pharma/` directory.
 
