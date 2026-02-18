@@ -3,7 +3,6 @@ services:
     name: pharmacy-agent
     env: docker
     plan: starter
-    scale: 1
     # Check your Dockerfile location
     dockerfilePath: Dockerfile
     dockerContext: .
