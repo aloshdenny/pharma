@@ -19,7 +19,8 @@ The frontend (UI) and token server are stateless and fit perfectly on Vercel.
     -   **Framework Preset**: Other
     -   **Build Command**: (Leave empty)
     -   **Deepgram/ElevenLabs keys**: NOT needed on Vercel (only on the Agent).
-    -   **Install Command**: `pip install -r requirements-vercel.txt` *(Crucial: This avoids installing heavy ML libraries like torch on the frontend server)*.
+    -   **Install Command**: `pip install -r requirements-vercel.txt`
+        > **CRITICAL**: You MUST set this in the Vercel Project Settings. If you leave it as default, Vercel will try to install `requirements.txt` which contains heavy libraries (Torch) that will cause the build to fail or timeout.
     -   **Output Directory**: `.` (default)
 4.  **Environment Variables**:
     Add the following variables in Vercel Project Settings:
