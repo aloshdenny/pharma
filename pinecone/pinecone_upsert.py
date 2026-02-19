@@ -1,7 +1,6 @@
 from pinecone import Pinecone
 import json
 from decouple import config
-from sentence_transformers import SentenceTransformer
 
 PINECONE_API_KEY = config("PINECONE_API_KEY")
 PINECONE_HOST = config("PINECONE_HOST")
@@ -10,27 +9,36 @@ PINECONE_NAMESPACE = config("PINECONE_NAMESPACE")
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(host=PINECONE_HOST)
 
-with open("pharma.json", "r") as f:
-    records = json.load(f)
+def sanitize_metadata(value):
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    return json.dumps(value, ensure_ascii=False)
 
-def batch_upsert(records, batch_size=50):
+def batch_upsert(records, batch_size=10):
     for i in range(0, len(records), batch_size):
         batch = records[i:i + batch_size]
-
         pinecone_records = []
 
-        for r in batch:
-            # build record WITHOUT changing source data
-            record = {
-                "_id": r["id"],
-                "text": r["text_for_embedding"],  # <-- REQUIRED FIELD NAME
+        for record in batch:
+            record_id = record["id"]
+
+            payload = {k: v for k, v in record.items() if k != "id"}
+
+            sanitized_metadata = {
+                k: sanitize_metadata(v)
+                for k, v in payload.items()
+                if sanitize_metadata(v) is not None
             }
 
-            # flatten metadata into top-level fields
-            for k, v in r["metadata"].items():
-                record[k] = v
-
-            pinecone_records.append(record)
+            pinecone_records.append({
+                "_id": record_id,
+                "text": json.dumps(payload, ensure_ascii=False),
+                **sanitized_metadata
+            })
 
         index.upsert_records(
             namespace=PINECONE_NAMESPACE,
@@ -38,5 +46,10 @@ def batch_upsert(records, batch_size=50):
         )
 
         print(f"Upserted batch {i // batch_size + 1}")
+
+
+# -------- RUN --------
+with open("data/db.json", "r") as f:
+    records = json.load(f)
 
 batch_upsert(records)

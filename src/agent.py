@@ -1,6 +1,8 @@
 import logging
 import sys
 from dotenv import load_dotenv
+from system_prompt import SYSTEM_PROMPT
+import json
 
 load_dotenv()
 
@@ -23,15 +25,11 @@ from livekit.agents import (
 from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import openai, deepgram, elevenlabs, silero
 
-# Optional: noise cancellation improves audio quality (pip install livekit-plugins-noise-cancellation)
 try:
     from livekit.plugins import noise_cancellation
     _HAS_NOISE_CANCELLATION = True
 except ImportError:
     _HAS_NOISE_CANCELLATION = False
-
-
-from rag import pinecone_search
 
 
 logger = logging.getLogger("voice-agent")
@@ -70,6 +68,15 @@ def prewarm(proc):
 
 server.setup_fnc = prewarm
 
+# Load the database once
+DB_PATH = "data/db.json"
+try:
+    with open(DB_PATH, "r") as f:
+        PATIENT_DB = json.load(f)
+    print(f"[PHARMA] >>> Loaded {len(PATIENT_DB)} records from {DB_PATH}", flush=True)
+except Exception as e:
+    print(f"[PHARMA] >>> ERROR loading DB: {e}", flush=True)
+    PATIENT_DB = []
 
 @server.rtc_session(agent_name="pharmacy-agent")
 async def pharmacy_agent(ctx: JobContext):
@@ -79,43 +86,17 @@ async def pharmacy_agent(ctx: JobContext):
     try:
         initial_ctx = llm.ChatContext()
         
-        # New Pharmacy Insurance Approval System Prompt
-        system_prompt = (
-            "You are a pharmacy insurance approval agent. Your goal is to check if a patient is cleared "
-            "to use a specific class of drugs based on their insurance tier. "
-            "When a patient name or ID is provided, look up their insurance tier and verify if the requested "
-            "drug class is allowed.\n\n"
-            "Here is the database you have access to:\n"
-            "Insurance Tiers:\n"
-            "- Basic Tier (TIER_BASIC): Allowed drug classes: Antipyretics, Analgesics, Antibiotics.\n"
-            "- Premium Tier (TIER_PREMIUM): Allowed drug classes: Antipyretics, Analgesics, Antibiotics, "
-            "Antihypertensives, Antidiabetics, Cardiac Drugs, Oncology Drugs, Biologics.\n\n"
-            "Patients:\n"
-            "- P001: Rahul Menon (TIER_BASIC)\n"
-            "- P002: Anita Sharma (TIER_PREMIUM)\n"
-            "- P003: Vikram Iyer (TIER_BASIC)\n"
-            "- P004: Neha Kapoor (TIER_PREMIUM)\n"
-            "- P005: Suresh Nair (TIER_BASIC)\n\n"
-            "Procedures:\n"
-            "1. Identify the patient using their Name or ID.\n"
-            "2. Identify the drug class being requested.\n"
-            "3. Check if the drug class is in the list of allowed classes for the patient's tier.\n"
-            "4. Inform the user whether the drug is approved or if it's rejected due to tier constraints.\n\n"
-            "Be professional, clear, and efficient."
-            "Don't use short forms like e.g or i.e etc. Use fullforms, for example, milligram instead of mg, milliletre instead of ml, and so on." \
-            "Keep sentences short and to the point, as if you are speaking to a patient on the phone. Do not provide long explanations or use bullet points. Only say what is necessary for the current turn, and ask one question at a time if you need more information."
-        )
-        
+        # Use shared system prompt from rag.py
         initial_ctx.add_message(
-            content=system_prompt,
+            content=SYSTEM_PROMPT,
             role="system",
         )
 
         class PharmacyTools:
             @llm.function_tool(
-                description="Search for relevant pharmacy and PBM rejection call records to find context about drug rejections, insurance plans, and PBM policies."
+                description="Search the insurance and pharmacy database to retrieve patient records, policy details, medication coverage, claim status, denial codes, dispensing history, and alternative drug availability."
             )
-            def search_records(self, query: str, top_k: int = 3):
+            async def pinecone_search(self, query: str, top_k: int = 3):
                 logger.info(f"Searching Pinecone for: {query}")
                 try:
                     results = pinecone_search(query, top_k)
@@ -126,6 +107,60 @@ async def pharmacy_agent(ctx: JobContext):
                 if not results:
                     return "No relevant records found."
                 return "\n\n".join(results)
+
+            @llm.function_tool(
+                description="Look up a specific patient record by Emirates ID, Policy Number, Claim ID, Patient ID, or Patient Name. Use this when you have a specific identifier."
+            )
+            async def lookup_database(
+                self,
+                emirates_id: str | None = None,
+                policy_number: str | None = None,
+                claim_id: str | None = None,
+                patient_id: str | None = None,
+                patient_name: str | None = None,
+            ):
+                """
+                Retrieves a patient record from the local database by exact match on identifiers.
+                For patient_name, performs a case-insensitive partial match.
+                """
+                logger.info(
+                    f"DB Lookup: eid={emirates_id}, pol={policy_number}, clm={claim_id}, pid={patient_id}, name={patient_name}"
+                )
+                
+                matches = []
+                for record in PATIENT_DB:
+                    # check EMIRATES ID
+                    if emirates_id and record.get("emirates_id") == emirates_id:
+                        matches.append(record)
+                        continue
+                    
+                    # check POLICY NUMBER
+                    if policy_number and record.get("policy_number") == policy_number:
+                        matches.append(record)
+                        continue
+
+                    # check CLAIM ID
+                    if claim_id and record.get("claim_id") == claim_id:
+                        matches.append(record)
+                        continue
+
+                    # check PATIENT ID
+                    if patient_id and record.get("patient_id") == patient_id:
+                        matches.append(record)
+                        continue
+
+                    # check NAME (partial match)
+                    if patient_name:
+                        rec_name = record.get("patient_name", "").lower()
+                        if patient_name.lower() in rec_name:
+                            matches.append(record)
+                            continue
+
+                if not matches:
+                    return "No records found matching the provided details."
+
+                # Return JSON string of matches (limit to top 3 to avoid context overflow)
+                return json.dumps(matches[:3], indent=2)
 
         pharmacy_tools = PharmacyTools()
         vad = ctx.proc.userdata.get("vad") or silero.VAD.load()
@@ -139,16 +174,21 @@ async def pharmacy_agent(ctx: JobContext):
             llm=openai.LLM(
                 base_url="https://api.groq.com/openai/v1",
                 api_key=config("GROQ_API_KEY"),
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
             ),
             tts=elevenlabs.TTS(
                 api_key=config("ELEVEN_API_KEY"),
-                voice_id="EzoxNTKsg4JNN7wxAgut",
+                voice_id="i80JxxvpWr5Q7cTdT1Ik",
+                # voice_settings=elevenlabs.VoiceSettings(
+                #     stability=0.5,
+                #     similarity_boost=0.75,
+                #     speed=0.8  # Adjust this between 0.7 and 1.2
+                # )
             ),
             vad=vad,
             turn_detection="vad",
             allow_interruptions=True,
-            tools=[pharmacy_tools.search_records],
+            tools=[pharmacy_tools.pinecone_search, pharmacy_tools.lookup_database],
         )
 
         class PharmacyAgent(Agent):
@@ -170,8 +210,6 @@ async def pharmacy_agent(ctx: JobContext):
                 ),
             )
 
-        # session.start() connects to the room automatically - do NOT call ctx.connect()
-        # (see livekit agents basic_agent.py and docs: AgentSession connects when started)
         print("[PHARMA] >>> Starting session (connects to room automatically)...", flush=True)
         await session.start(
             agent=agent,
