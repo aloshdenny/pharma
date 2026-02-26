@@ -1,8 +1,10 @@
 import logging
 import sys
+import os
 from dotenv import load_dotenv
 from system_prompt import SYSTEM_PROMPT
 import json
+import openpyxl
 
 load_dotenv()
 
@@ -77,6 +79,62 @@ try:
 except Exception as e:
     print(f"[PHARMA] >>> ERROR loading DB: {e}", flush=True)
     PATIENT_DB = []
+
+# Load the drug code Excel file once
+DRUG_CODE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "Claim Drug Code List.xlsx")
+DRUG_CODE_DB = []
+try:
+    wb = openpyxl.load_workbook(DRUG_CODE_PATH, read_only=True, data_only=True)
+    ws = wb.active
+    headers = [cell.value for cell in ws[1]]
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, values_only=True):
+        record = dict(zip(headers, row))
+        DRUG_CODE_DB.append(record)
+    wb.close()
+    print(f"[PHARMA] >>> Loaded {len(DRUG_CODE_DB)} drug codes from {DRUG_CODE_PATH}", flush=True)
+except Exception as e:
+    print(f"[PHARMA] >>> ERROR loading drug code list: {e}", flush=True)
+    DRUG_CODE_DB = []
+
+
+def _search_drug_codes(drug_code: str | None = None, drug_name: str | None = None, max_results: int = 5) -> list[dict]:
+    """Search the in-memory drug code database by code or name (brand/scientific)."""
+    matches = []
+    for record in DRUG_CODE_DB:
+        # Exact match on drug code
+        if drug_code:
+            code_val = str(record.get("Code", "")).strip()
+            if drug_code.strip().lower() == code_val.lower():
+                matches.append(record)
+                continue
+
+        # Partial case-insensitive match on name fields
+        if drug_name:
+            search_term = drug_name.strip().lower()
+            scientific = str(record.get("Scientific Name", "")).lower()
+            brand = str(record.get("Description", "")).lower()
+            if search_term in scientific or search_term in brand:
+                matches.append(record)
+                continue
+
+        if len(matches) >= max_results:
+            break
+
+    # Format results for the agent
+    results = []
+    for m in matches[:max_results]:
+        results.append({
+            "drug_code": m.get("Code", ""),
+            "scientific_name": m.get("Scientific Name", ""),
+            "brand_name": m.get("Description", ""),
+            "strength": m.get("Strength", ""),
+            "route": m.get("Roa", ""),
+            "dosage_form": m.get("Dosage Form Package", ""),
+            "unit_price_aed": m.get("Price", ""),
+            "package_size": m.get("Package Size", ""),
+            "active": m.get("Active", ""),
+        })
+    return results
 
 @server.rtc_session(agent_name="pharmacy-agent")
 async def pharmacy_agent(ctx: JobContext):
@@ -162,6 +220,30 @@ async def pharmacy_agent(ctx: JobContext):
                 # Return JSON string of matches (limit to top 3 to avoid context overflow)
                 return json.dumps(matches[:3], indent=2)
 
+            @llm.function_tool(
+                description="Look up a drug by its drug code (e.g. '0005-116801-1161') or by drug name (brand or scientific/generic name). Returns the official drug code, scientific name, brand name, strength, route, dosage form, unit price in AED, and active/discontinued status. Use this when a caller mentions a medication by name and you need to verify its drug code, price, or availability."
+            )
+            async def lookup_drug_code(
+                self,
+                drug_code: str | None = None,
+                drug_name: str | None = None,
+            ):
+                """
+                Searches the drug code database.
+                Provide either drug_code for exact code lookup, or drug_name for partial name search.
+                """
+                logger.info(f"Drug code lookup: code={drug_code}, name={drug_name}")
+
+                if not drug_code and not drug_name:
+                    return "Please provide either a drug code or a drug name to search."
+
+                results = _search_drug_codes(drug_code=drug_code, drug_name=drug_name)
+
+                if not results:
+                    return "No matching drugs found in the drug code database. Please verify the drug code or name."
+
+                return json.dumps(results, indent=2)
+
         pharmacy_tools = PharmacyTools()
         vad = ctx.proc.userdata.get("vad") or silero.VAD.load()
 
@@ -188,7 +270,7 @@ async def pharmacy_agent(ctx: JobContext):
             vad=vad,
             turn_detection="vad",
             allow_interruptions=True,
-            tools=[pharmacy_tools.pinecone_search, pharmacy_tools.lookup_database],
+            tools=[pharmacy_tools.pinecone_search, pharmacy_tools.lookup_database, pharmacy_tools.lookup_drug_code],
         )
 
         class PharmacyAgent(Agent):
