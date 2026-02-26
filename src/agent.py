@@ -168,22 +168,27 @@ async def pharmacy_agent(ctx: JobContext):
                 return "\n\n".join(results)
 
             @llm.function_tool(
-                description="Look up a specific patient record by Emirates ID, Policy Number, Claim ID, Patient ID, or Patient Name. Use this FIRST when you have a specific identifier. Returns: patient identity, insurance policy details (plan, copay, limits, active status), prescription details, dispensing history (prior dispenses, already dispensed this cycle), claim status, denial code and reason, recommended resolution, inventory status, and alternative drugs with availability."
+                description="Look up a specific patient record by Emirates ID, Policy Number, Member Card Number, Claim ID, Patient ID, or Patient Name. Use this FIRST when you have a specific identifier. Returns: patient identity, insurance policy details (plan, copay, limits, active status), prescription details, dispensing history (prior dispenses, already dispensed this cycle), claim status, denial code and reason, recommended resolution, inventory status, and alternative drugs with availability."
             )
             async def lookup_database(
                 self,
                 emirates_id: str | None = None,
                 policy_number: str | None = None,
+                member_card_number: str | None = None,
                 claim_id: str | None = None,
                 patient_id: str | None = None,
                 patient_name: str | None = None,
             ):
                 """
                 Retrieves a patient record from the local database by exact match on identifiers.
+                member_card_number is treated as a policy number lookup.
                 For patient_name, performs a case-insensitive partial match.
                 """
+                # member_card_number maps to policy_number in the DB
+                effective_policy = policy_number or member_card_number
+
                 logger.info(
-                    f"DB Lookup: eid={emirates_id}, pol={policy_number}, clm={claim_id}, pid={patient_id}, name={patient_name}"
+                    f"DB Lookup: eid={emirates_id}, pol={effective_policy}, clm={claim_id}, pid={patient_id}, name={patient_name}"
                 )
                 
                 matches = []
@@ -193,8 +198,8 @@ async def pharmacy_agent(ctx: JobContext):
                         matches.append(record)
                         continue
                     
-                    # check POLICY NUMBER
-                    if policy_number and record.get("policy_number") == policy_number:
+                    # check POLICY NUMBER / MEMBER CARD NUMBER
+                    if effective_policy and record.get("policy_number") == effective_policy:
                         matches.append(record)
                         continue
 
