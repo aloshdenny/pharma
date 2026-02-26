@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from system_prompt import SYSTEM_PROMPT
 import json
 import openpyxl
+from rag import pinecone_search as _rag_pinecone_search
 
 load_dotenv()
 
@@ -152,12 +153,12 @@ async def pharmacy_agent(ctx: JobContext):
 
         class PharmacyTools:
             @llm.function_tool(
-                description="Search the insurance and pharmacy database to retrieve patient records, policy details, medication coverage, claim status, denial codes, dispensing history, and alternative drug availability."
+                description="Semantic search over the insurance and pharmacy database. Use this to find similar past cases, check general policy rules, or search when you don't have an exact identifier. Returns patient records including policy details, medication coverage, claim status, denial codes, dispensing history, and alternative drug availability."
             )
             async def pinecone_search(self, query: str, top_k: int = 3):
                 logger.info(f"Searching Pinecone for: {query}")
                 try:
-                    results = pinecone_search(query, top_k)
+                    results = _rag_pinecone_search(query, top_k)
                 except Exception as e:
                     logger.exception("RAG pinecone_search failed")
                     print(f"[PHARMA] >>> RAG ERROR: {e}", flush=True)
@@ -167,7 +168,7 @@ async def pharmacy_agent(ctx: JobContext):
                 return "\n\n".join(results)
 
             @llm.function_tool(
-                description="Look up a specific patient record by Emirates ID, Policy Number, Claim ID, Patient ID, or Patient Name. Use this when you have a specific identifier."
+                description="Look up a specific patient record by Emirates ID, Policy Number, Claim ID, Patient ID, or Patient Name. Use this FIRST when you have a specific identifier. Returns: patient identity, insurance policy details (plan, copay, limits, active status), prescription details, dispensing history (prior dispenses, already dispensed this cycle), claim status, denial code and reason, recommended resolution, inventory status, and alternative drugs with availability."
             )
             async def lookup_database(
                 self,
