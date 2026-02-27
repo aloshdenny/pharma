@@ -2,7 +2,7 @@ from pinecone import Pinecone
 import os
 import json
 import logging
-from groq import Groq
+from openai import OpenAI
 from decouple import config
 from system_prompt import SYSTEM_PROMPT
 
@@ -10,12 +10,12 @@ PINECONE_API_KEY     = config("PINECONE_API_KEY")
 PINECONE_HOST        = config("PINECONE_HOST")
 PINECONE_NAMESPACE   = config("PINECONE_NAMESPACE")
 
-GROQ_API_KEY  = config("GROQ_API_KEY")
-GROQ_MODEL    = "openai/gpt-oss-120b"
+OPENAI_API_KEY  = config("OPENAI_API_KEY")
+OPENAI_MODEL    = "gpt-5-mini-2025-08-07"
 
 pc             = Pinecone(api_key=PINECONE_API_KEY)
 pinecone_index = pc.Index(host=PINECONE_HOST)
-groq_client    = Groq(api_key=GROQ_API_KEY)
+openai_client  = OpenAI(api_key=OPENAI_API_KEY)
 
 def pinecone_search(query: str, top_k: int = 5):
     """Semantic search over Pinecone. Returns list of text snippets or [] on failure."""
@@ -39,7 +39,7 @@ def pinecone_search(query: str, top_k: int = 5):
 
 CHAT_HISTORY = []
 
-def ask_groq_with_context(query: str, max_retries: int = 3):
+def ask_openai_with_context(query: str, max_retries: int = 3):
     global CHAT_HISTORY
 
     tools = [
@@ -85,8 +85,8 @@ def ask_groq_with_context(query: str, max_retries: int = 3):
     for step in range(max_total_steps):
         llm_messages = [system_message] + CHAT_HISTORY
 
-        chat_completion = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
+        chat_completion = openai_client.chat.completions.create(
+            model=OPENAI_MODEL,
             messages=llm_messages,
             tools=tools,
             tool_choice="auto",
@@ -204,7 +204,7 @@ if __name__ == "__main__":
             if user_input.lower() in ["exit", "quit", "bye"]:
                 print("\nAI Agent: Thank you for calling. Take care, goodbye.")
                 break
-            ask_groq_with_context(user_input)
+            ask_openai_with_context(user_input)
         except KeyboardInterrupt:
             print("\nAI Agent: Session ended. Goodbye.")
             break

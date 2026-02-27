@@ -41,7 +41,7 @@ logger = logging.getLogger("voice-agent")
 _REQUIRED_KEYS = [
     ("DEEPGRAM_API_KEY", "STT (speech-to-text)"),
     ("ELEVEN_API_KEY", "TTS (text-to-speech)"),
-    ("GROQ_API_KEY", "LLM"),
+    ("OPENAI_API_KEY", "LLM"),
     ("PINECONE_API_KEY", "RAG search"),
     ("PINECONE_HOST", "RAG search"),
     ("PINECONE_NAMESPACE", "RAG search"),
@@ -260,9 +260,8 @@ async def pharmacy_agent(ctx: JobContext):
                 api_key=config("DEEPGRAM_API_KEY"),
             ),
             llm=openai.LLM(
-                base_url="https://api.groq.com/openai/v1",
-                api_key=config("GROQ_API_KEY"),
-                model="openai/gpt-oss-120b",
+                api_key=config("OPENAI_API_KEY"),
+                model="gpt-5-mini-2025-08-07",
             ),
             tts=elevenlabs.TTS(
                 api_key=config("ELEVEN_API_KEY"),
