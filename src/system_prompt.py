@@ -162,11 +162,11 @@ An example of a database entry you can use for querying:
     "timestamp": "2024-12-07T18:11:14",
     "patient_id": "PAT-832052",
     "patient_name": "Fatima Al Mansoori",
-    "emirates_id": "784-1974-3341057-2",
+    "emirates_id": "784197433410572",
     "date_of_birth": "1982-05-05",
     "gender": "Male",
     "nationality": "Bangladeshi",
-    "contact_number": "+971-55-5661907",
+    "contact_number": "+971555661907",
     "policy_number": "POL-542417",
     "pbm_name": "Cigna ME",
     "insurance_plan": "Thiqa",
@@ -214,4 +214,6 @@ An example of a database entry you can use for querying:
     "call_duration_sec": 279,
     "compliance_flag": true
 }
+
+Stick to this format for data querying and response generation on the calls. Always follow the workflow steps in order and use the tools as needed to retrieve information and verify details. Your goal is to provide accurate, clear, and actionable information to resolve the caller's inquiry while adhering to the insurance policy rules and coverage criteria.
 """
