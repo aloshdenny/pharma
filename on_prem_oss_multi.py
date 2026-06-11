@@ -674,6 +674,20 @@ TOOLS_OPENAI: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_claim_by_id",
+            "description": "Look up details of a claim by its PBM claim ID (e.g., CLM-2025-0441). Returns member ID, drug name, status, and rejection/PA reasons.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "claim_id": {"type": "string", "description": "e.g. CLM-2025-0441"},
+                },
+                "required": ["claim_id"],
+            },
+        },
+    },
 ]
 
 _TOOLS_JSON_SCHEMA = json.dumps(
@@ -681,14 +695,13 @@ _TOOLS_JSON_SCHEMA = json.dumps(
 )
 
 _JSON_SHIM_ADDENDUM = f"""
-You have access to the following tools. When you need to call a tool, output
-ONLY a valid JSON object on a single line — no prose, no markdown fences:
+You have access to the following tools. When you need to call one or more tools, output
+ONLY a valid JSON array or object on a single line — no prose, no markdown fences:
 
-  {{"tool": "<tool_name>", "arguments": {{...}}}}
+  [ {{"tool": "<tool_name>", "arguments": {{...}}}}, ... ]
 
-After you receive the tool result (injected as a user message), continue
-the conversation naturally in plain text. If no tool call is needed, respond
-normally in plain text.
+After receiving the tool results (injected as user messages), continue naturally
+in plain text. If no tool call is needed, respond normally in plain text.
 
 Available tools:
 {_TOOLS_JSON_SCHEMA}
@@ -702,102 +715,151 @@ Available tools:
 def execute_tool(name: str, inputs: dict) -> tuple[dict, float]:
     """Execute tool against _DB. Returns (result, resolver_latency_ms)."""
     t0 = time.perf_counter()
-
-    if name == "lookup_member":
-        eid = inputs["emirates_id"].strip()
-        m = _DB["members"].get(eid)
-        result: dict = (
-            {"found": False, "error": "No member record."}
-            if not m else
-            {
-                "found": True,
-                "emirates_id":      m["emirates_id"],
-                "policy_number":    m["policy_number"],
-                "insurer":          m["insurer"],
-                "plan":             m["plan"],
-                "status":           m["status"],
-                "copay_pct":        m["copay_pct"],
-                "expiry_date":      m["expiry_date"],
-                "network_pharmacy": m["network_pharmacy"],
-            }
-        )
-
-    elif name == "verify_member_name":
-        eid      = inputs["emirates_id"].strip()
-        provided = inputs["provided_name"].strip().lower()
-        m        = _DB["members"].get(eid)
-        if not m:
-            result = {"verified": False, "reason": "Member not found."}
-        else:
-            stored = m["name"].strip().lower()
-            match  = (provided == stored) or (provided in stored) or (stored in provided)
-            result = {"verified": match}
-
-    elif name == "get_claim_status":
-        eid     = inputs["emirates_id"].strip()
-        query   = inputs["drug_name"].strip().lower()
-        matched = None
-        for claim in _DB["claims"]:
-            if claim["member_id"] == eid and (
-                query in claim["drug"].lower()
-                or query in claim["generic"].lower()
-                or claim["drug"].lower() in query
-            ):
-                matched = claim
-                break
-        result = (
-            {"found": False, "message": "No claim found."}
-            if not matched else
-            {
-                "found":            True,
-                "claim_id":         matched["claim_id"],
-                "drug":             matched["drug"],
-                "generic":          matched["generic"],
-                "drug_class":       matched["drug_class"],
-                "status":           matched["status"],
-                "pa_required":      matched["pa_required"],
-                "pa_reason":        matched["pa_reason"],
-                "rejection_reason": matched["rejection_reason"],
-                "submitted":        matched["submitted"],
-            }
-        )
-
-    elif name == "get_formulary_alternatives":
-        dc   = inputs["drug_class"].strip().lower()
-        pid  = inputs["pharmacy_id"].strip()
-        alts = _DB["formulary_alternatives"].get(dc, [])
-        inv  = _DB["inventory"].get(pid, {})
-        result = {
-            "drug_class":   dc,
-            "pharmacy_id":  pid,
-            "alternatives": [
+    try:
+        if name == "lookup_member":
+            eid = inputs.get("emirates_id", "")
+            if not eid:
+                return {"error": "Missing required argument: emirates_id"}, (time.perf_counter() - t0) * 1_000
+            eid = eid.strip()
+            m = _DB["members"].get(eid)
+            result = (
+                {"found": False, "error": "No member record."}
+                if not m else
                 {
-                    **a,
-                    "inventory_status": inv.get(a["drug"], {}).get("status", "unknown"),
-                    "qty_on_hand":      inv.get(a["drug"], {}).get("qty", 0),
+                    "found":            True,
+                    "emirates_id":      m["emirates_id"],
+                    "policy_number":    m["policy_number"],
+                    "insurer":          m["insurer"],
+                    "plan":             m["plan"],
+                    "status":           m["status"],
+                    "copay_pct":        m["copay_pct"],
+                    "expiry_date":      m["expiry_date"],
+                    "network_pharmacy": m["network_pharmacy"],
                 }
-                for a in alts
-            ],
-        }
+            )
 
-    elif name == "get_policy_status":
-        eid = inputs["emirates_id"].strip()
-        m   = _DB["members"].get(eid)
-        result = (
-            {"found": False}
-            if not m else
-            {
-                "found":          True,
-                "policy_number":  m["policy_number"],
-                "insurer":        m["insurer"],
-                "plan":           m["plan"],
-                "status":         m["status"],
-                "expiry_date":    m["expiry_date"],
+        elif name == "verify_member_name":
+            eid = inputs.get("emirates_id", "")
+            provided = inputs.get("provided_name", "")
+            if not eid or not provided:
+                missing = []
+                if not eid: missing.append("emirates_id")
+                if not provided: missing.append("provided_name")
+                return {"error": f"Missing required argument(s): {', '.join(missing)}"}, (time.perf_counter() - t0) * 1_000
+            eid      = eid.strip()
+            provided = provided.strip().lower()
+            m        = _DB["members"].get(eid)
+            if not m:
+                result = {"verified": False, "reason": "Member not found."}
+            else:
+                stored = m["name"].strip().lower()
+                match  = (provided == stored) or (provided in stored) or (stored in provided)
+                result = {"verified": match}
+
+        elif name == "get_claim_status":
+            eid = inputs.get("emirates_id", "")
+            query = inputs.get("drug_name", "")
+            if not eid or not query:
+                missing = []
+                if not eid: missing.append("emirates_id")
+                if not query: missing.append("drug_name")
+                return {"error": f"Missing required argument(s): {', '.join(missing)}"}, (time.perf_counter() - t0) * 1_000
+            eid     = eid.strip()
+            query   = query.strip().lower()
+            matched = None
+            for claim in _DB["claims"]:
+                if claim["member_id"] == eid and (
+                    query in claim["drug"].lower()
+                    or query in claim["generic"].lower()
+                    or claim["drug"].lower() in query
+                ):
+                    matched = claim
+                    break
+            result = (
+                {"found": False, "message": "No claim found."}
+                if not matched else
+                {
+                    "found":            True,
+                    "claim_id":         matched["claim_id"],
+                    "drug":             matched["drug"],
+                    "generic":          matched["generic"],
+                    "drug_class":       matched["drug_class"],
+                    "status":           matched["status"],
+                    "pa_required":      matched["pa_required"],
+                    "pa_reason":        matched["pa_reason"],
+                    "rejection_reason": matched["rejection_reason"],
+                    "submitted":        matched["submitted"],
+                }
+            )
+
+        elif name == "get_formulary_alternatives":
+            drug_class = inputs.get("drug_class", "")
+            pharmacy_id = inputs.get("pharmacy_id", "")
+            if not drug_class or not pharmacy_id:
+                missing = []
+                if not drug_class: missing.append("drug_class")
+                if not pharmacy_id: missing.append("pharmacy_id")
+                return {"error": f"Missing required argument(s): {', '.join(missing)}"}, (time.perf_counter() - t0) * 1_000
+            dc   = drug_class.strip().lower()
+            pid  = pharmacy_id.strip()
+            alts = _DB["formulary_alternatives"].get(dc, [])
+            inv  = _DB["inventory"].get(pid, {})
+            result = {
+                "drug_class":   dc,
+                "pharmacy_id":  pid,
+                "alternatives": [
+                    {
+                        **a,
+                        "inventory_status": inv.get(a["drug"], {}).get("status", "unknown"),
+                        "qty_on_hand":      inv.get(a["drug"], {}).get("qty", 0),
+                    }
+                    for a in alts
+                ],
             }
-        )
 
-    else:
-        result = {"error": f"Unknown tool: {name}"}
+        elif name == "get_policy_status":
+            eid = inputs.get("emirates_id", "")
+            if not eid:
+                return {"error": "Missing required argument: emirates_id"}, (time.perf_counter() - t0) * 1_000
+            eid = eid.strip()
+            m   = _DB["members"].get(eid)
+            result = (
+                {"found": False}
+                if not m else
+                {
+                    "found":          True,
+                    "policy_number":  m["policy_number"],
+                    "insurer":        m["insurer"],
+                    "plan":           m["plan"],
+                    "status":         m["status"],
+                    "expiry_date":    m["expiry_date"],
+                }
+            )
+
+        elif name == "get_claim_by_id":
+            cid = inputs.get("claim_id", "")
+            if not cid:
+                return {"error": "Missing required argument: claim_id"}, (time.perf_counter() - t0) * 1_000
+            cid = cid.strip()
+            match = next((c for c in _DB["claims"] if c["claim_id"] == cid), None)
+            result = ({"found": False, "error": "Claim not found."} if not match else {
+                "found": True,
+                "claim_id": match["claim_id"],
+                "member_id": match["member_id"],
+                "drug": match["drug"],
+                "generic": match["generic"],
+                "drug_class": match["drug_class"],
+                "status": match["status"],
+                "pa_required": match["pa_required"],
+                "pa_reason": match["pa_reason"],
+                "rejection_reason": match["rejection_reason"],
+                "submitted": match["submitted"],
+            })
+
+        else:
+            result = {"error": f"Unknown tool: {name}"}
+    except Exception as e:
+        result = {"error": f"Tool execution failed: {type(e).__name__}: {e}"}
 
     return result, (time.perf_counter() - t0) * 1_000
 
@@ -807,29 +869,28 @@ def execute_tool(name: str, inputs: dict) -> tuple[dict, float]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _SYSTEM_BASE = """\
+Reasoning: low
 You are the NGI Pharma AI Agent — an autonomous voice agent handling inbound calls
 for a Pharmacy Benefit Management (PBM) platform operated by IIRIS Health.
 
-IDENTITY & VERIFICATION RULES
+IDENTITY, VERIFICATION & NAVIGATION RULES
 1. Authenticate before disclosing any protected information.
    - Pharmacy caller: ask for pharmacy branch ID + patient Emirates ID, then confirm name.
    - Patient caller: ask for Emirates ID and date of birth, then confirm full name.
-2. Call lookup_member first, then verify_member_name. Do not disclose claim or policy
-   details until verify_member_name returns {verified: true}.
-3. If verification fails: "I'm unable to verify the identity on record." Do NOT reveal stored name.
+2. If given a PBM claim number (e.g. CLM-2025-0441), use get_claim_by_id to retrieve the claim context (member ID, drug, status, etc.).
+3. If the caller provides both the patient's Emirates ID and full name (along with a claim ID), call get_claim_by_id, lookup_member, and verify_member_name in parallel in a single turn to minimize latency. Disclose nothing about the claim or member until verify_member_name returns {verified: true}.
+4. If verification fails: "I'm unable to verify the identity on record." Do NOT reveal stored name.
 
-CLAIM & POLICY RULES
-4. Use get_claim_status with the exact drug the caller mentions.
-5. When a claim is "under_review" due to PA, explain why PA is required (use pa_reason),
-   what must be submitted, and that review takes 24-48 hours after submission.
-6. When suggesting alternatives, include inventory status from get_formulary_alternatives.
-7. If a policy is "expired", direct the caller to HR or the insurer. Do not process claims.
-8. Use get_policy_status as a fast-path check when a claim is rejected.
+CLAIM, POLICY & MULTI-QUERY RULES
+5. When a claim is "under_review" due to PA, explain why, what must be submitted, and that review takes 24-48 hours.
+6. When suggesting alternatives or checking stock levels, run get_formulary_alternatives and check pharmacy inventory in parallel in a single turn.
+7. If a policy is "expired", direct the caller to HR or insurer. Do not process claims.
+8. Use get_policy_status or get_claim_status in parallel with other queries if checking multiple aspects of policy/status.
 
 VOICE BEHAVIOR
-- Phone call: keep responses to 2-4 sentences per turn.
-- No bullet points or headers.
-- Professional, warm, efficient.
+- This is a phone call. Keep responses concise — 2–4 sentences per turn.
+- Do not use bullet points or headers in spoken replies. Max 80 tokens.
+- Be professional, warm, and efficient.
 - Always use tools to fetch data. Never invent claim status, inventory, copays, or policy details.
 """
 
@@ -865,21 +926,42 @@ def _parse_gemma_tool_call(text: str) -> dict | None:
     return {"name": fn_name, "arguments": args} if fn_name and args else None
 
 
-def parse_json_tool_call(text: str) -> dict | None:
+def parse_json_tool_calls(text: str) -> list[dict] | None:
     text = text.strip()
+    # 1. Try to parse as single JSON array or object
     try:
         obj = json.loads(text)
-        if isinstance(obj, dict) and "tool" in obj and "arguments" in obj:
-            return {"name": obj["tool"], "arguments": obj["arguments"]}
+        if isinstance(obj, list):
+            tcs = []
+            for item in obj:
+                if isinstance(item, dict) and "tool" in item and "arguments" in item:
+                    tcs.append({"name": item["tool"], "arguments": item["arguments"]})
+            if tcs:
+                return tcs
+        elif isinstance(obj, dict):
+            if "tool" in obj and "arguments" in obj:
+                return [{"name": obj["tool"], "arguments": obj["arguments"]}]
     except json.JSONDecodeError:
         pass
-    m = _JSON_TOOL_RE.search(text)
-    if m:
+
+    # 2. Try to regex find multiple single JSON tool calls in the text
+    tcs = []
+    for m in _JSON_TOOL_RE.finditer(text):
         try:
-            return {"name": m.group(1), "arguments": json.loads(m.group(2))}
+            tcs.append({"name": m.group(1), "arguments": json.loads(m.group(2))})
         except json.JSONDecodeError:
             pass
-    return _parse_gemma_tool_call(text)
+
+    # 3. Try to regex find multiple Gemma-style tool calls in the text
+    for m in _GEMMA_TOOL_RE.finditer(text):
+        args_str = m.group(2).strip()
+        args: dict = {}
+        for kv in re.finditer(r'(\w+)\s*=\s*(?:"([^"]*?)"|\'([^\']*?)\'|(\S+?)(?:,|$))', args_str):
+            args[kv.group(1)] = kv.group(2) or kv.group(3) or kv.group(4)
+        if m.group(1) and args:
+            tcs.append({"name": m.group(1), "arguments": args})
+
+    return tcs if tcs else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1105,9 +1187,9 @@ def run_conversation(
                     metrics.tokens_generated += (usage.completion_tokens or 0)
 
                 raw_text  = response.choices[0].message.content or ""
-                tool_call = parse_json_tool_call(raw_text)
+                tcs = parse_json_tool_calls(raw_text)
 
-                if tool_call is None:
+                if tcs is None:
                     if raw_text.strip():
                         responded_this_turn = True
                         with lock:
@@ -1115,35 +1197,40 @@ def run_conversation(
                     messages.append({"role": "assistant", "content": raw_text})
                     break
 
-                fn_name = tool_call["name"]
-                fn_args = tool_call["arguments"]
-
-                result, resolver_ms = execute_tool(fn_name, fn_args)
-                e2e_ms  = (time.perf_counter() - t_llm0) * 1_000
-                tool_ok = "error" not in result
-
-                if tool_ok:
-                    metrics.tool_calls_success += 1
-                else:
-                    metrics.tool_calls_failed  += 1
-
-                metrics.resolver_latencies_ms.append(resolver_ms)
-                metrics.e2e_tool_latencies_ms.append(e2e_ms)
-                metrics.tool_log.append({
-                    "turn": turn_index, "tool": fn_name,
-                    "input": fn_args, "result": result,
-                    "resolver_ms": round(resolver_ms, 4),
-                    "e2e_ms": round(e2e_ms, 2),
-                    "success": tool_ok,
-                })
-
-                with lock:
-                    print(f"  [A{agent_id}] TOOL→ {fn_name}  resolver={resolver_ms:.3f}ms  e2e={e2e_ms:.0f}ms")
-
                 messages.append({"role": "assistant", "content": raw_text})
+
+                results_list = []
+                for tc in tcs:
+                    fn_name = tc["name"]
+                    fn_args = tc["arguments"]
+
+                    result, resolver_ms = execute_tool(fn_name, fn_args)
+                    e2e_ms  = (time.perf_counter() - t_llm0) * 1_000
+                    tool_ok = "error" not in result
+
+                    if tool_ok:
+                        metrics.tool_calls_success += 1
+                    else:
+                        metrics.tool_calls_failed  += 1
+
+                    metrics.resolver_latencies_ms.append(resolver_ms)
+                    metrics.e2e_tool_latencies_ms.append(e2e_ms)
+                    metrics.tool_log.append({
+                        "turn": turn_index, "tool": fn_name,
+                        "input": fn_args, "result": result,
+                        "resolver_ms": round(resolver_ms, 4),
+                        "e2e_ms": round(e2e_ms, 2),
+                        "success": tool_ok,
+                    })
+
+                    with lock:
+                        print(f"  [A{agent_id}] TOOL→ {fn_name}  resolver={resolver_ms:.3f}ms  e2e={e2e_ms:.0f}ms")
+
+                    results_list.append(f"[TOOL RESULT for {fn_name}]: {json.dumps(result, ensure_ascii=False)}")
+
                 messages.append({
                     "role": "user",
-                    "content": f"[TOOL RESULT for {fn_name}]: {json.dumps(result, ensure_ascii=False)}",
+                    "content": "\n".join(results_list),
                 })
 
         if not responded_this_turn:
@@ -1164,60 +1251,43 @@ _SCENARIOS: dict[int, dict] = {
         "name": "Scenario 1 — Complex Pharmacy Call (Step Therapy, Alternatives & Refill Block)",
         "caller_type": "pharmacy_staff",
         "turns": [
-            "Hi, I'm calling from Dubai Pharmacy branch 005. I'd like to check on a claim and a few related queries for two patients.",
-            "Sure — first patient: Emirates ID 784-1996-7169603-3.",
-            "Yes, the patient's name is Omar Ali.",
-            "We submitted a claim for Zocor 40mg about a week ago. Can you tell me the current status?",
-            "What exactly does step therapy require in this case?",
-            "Understood. What covered statin alternatives are available under his plan, and do you show any inventory for them at this pharmacy?",
-            "Good — we'll switch to Atorvastatin 20mg. His copay is 20%, so what would the patient owe per 30-unit dispensing at the unit price on file?",
-            "Got it. Once the physician sends the updated script, we re-submit through E-Claim and the review should complete within 24–48 hours, correct?",
-            "Now the second query — same member, but for Metformin 500mg. Was there a claim approved for that recently?",
-            "Was it already dispensed this cycle? The patient is asking for an early refill.",
-            "Okay, I'll let the patient know he needs to wait. Moving on — different patient: Emirates ID 784-1978-6329401-7. Name is Ravi Reyes.",
-            "He had a Zocor 20mg claim that was rejected because of the brand restriction. What generic should we resubmit?",
-            "Do we have Simvastatin 20mg in stock at DXB-PH-005?",
-            "Perfect. We'll resubmit Simvastatin 20mg through E-Claim. Is there anything else needed on the submission form?",
+            "Hi, I'm calling from Dubai Pharmacy branch 005. I'd like to check on claim CLM-2025-0441.",
+            "Yes, the patient is Omar Ali and the Emirates ID is 784-1996-7169603-3.",
+            "What are the step therapy requirements for Zocor under his plan, and do you show covered alternatives in the statin class with available inventory here at DXB-PH-005?",
+            "If we switch to Atorvastatin 20mg, does his copay change under ADNIC Enhanced? Also, check if there is an approved Metformin 500mg claim (CLM-2025-0490) on file for him.",
+            "Is it too early to refill that Metformin claim, and does the plan require prior authorization for his other drug Lantus? Let's check Lantus claim status for him too.",
+            "Okay, I'll advise the patient on Metformin. Now, I have another claim from a different patient: CLM-2025-0617. Let's check that one.",
+            "The patient is Ravi Reyes, Emirates ID 784-1978-6329401-7.",
+            "What generic should we resubmit for Ravi, and do we have stock of it here at DXB-PH-005?",
+            "Perfect. We'll resubmit Simvastatin 20mg for Ravi. Are there any other active claims or policy issues on file for him?",
         ],
     },
     2: {
         "name": "Scenario 2 — Patient PA Inquiry, Benefit Check & Family Member Query",
         "caller_type": "patient",
         "turns": [
-            "Hello, I'm calling to check the status of my Januvia prescription claim.",
-            "My Emirates ID is 784-2004-2137407-6 and my date of birth is March 16th, 1988.",
-            "Ahmed Khan.",
-            "Yes, that's my prescription. Is it approved?",
-            "What does prior authorization involve, and how long does the review take once my doctor submits?",
-            "Is there a covered alternative for Januvia that doesn't need PA? My doctor mentioned Metformin.",
-            "How much would Metformin cost me with my copay?",
-            "Also, I checked my benefit balance online and it shows AED 287,400 remaining — is that correct?",
-            "Good. Now a separate question — my mother is also on NAS Enhanced and she's trying to get Insulin Glargine covered. Is that generally covered under NAS Enhanced?",
-            "She'd need a prior authorization form. Can you tell me exactly what information to include?",
-            "Can I submit it through the E-Claim portal myself, or does it have to go from the physician's office?",
-            "Understood. One last thing — I also have an approved Metformin claim from a couple of weeks ago. Has it been dispensed?",
-            "Is it too early to refill it?",
-            "Okay, I understand. Thank you — I'll call my doctor about the Januvia PA and wait for the Metformin cycle to reset.",
+            "Hello, I'm calling to check the status of my claim CLM-2025-0512.",
+            "My Emirates ID is 784-2004-2137407-6 and my name is Ahmed Khan. My date of birth is March 16th, 1988.",
+            "What does the PA process entail, how long does it take, and do I have any covered alternatives that don't require prior authorization under my plan?",
+            "Can you check if I have a claim for Metformin already, and what the copay would be under my plan? Also check my remaining policy benefit balance.",
+            "Is that Metformin claim already dispensed, and can I also check a claim status for my family member Hana Patel: CLM-2025-0601?",
+            "Her Emirates ID is 784-1983-4821093-1 and her name is Hana Patel.",
+            "What covered alternatives do we have for Lantus under her plan, and do you show stock for them at Dubai Pharmacy DXB-PH-022?",
+            "Great. We'll speak with her doctor about switching to Insulin Detemir. Thank you for your help!",
         ],
     },
     3: {
         "name": "Scenario 3 — Expired Policy, Rejection Explanations & Drug Switches",
         "caller_type": "patient",
         "turns": [
-            "Hi, I tried to fill my Plavix at the pharmacy but they said the claim was rejected. Can you tell me why?",
-            "Sure — my Emirates ID is 784-1974-3341057-2 and my birthday is May 5th, 1982.",
-            "Fatima Al Mansoori.",
-            "I see. When exactly did my policy expire?",
-            "I was not informed. Is there any way to get a temporary override or process it manually for this one prescription?",
-            "My company said they renewed it. Could there be a processing delay on your end?",
-            "Who do I contact to escalate this if HR says it's renewed but you still show it as expired?",
-            "While this gets sorted, is there any out-of-pocket option or a generic alternative for Plavix that would be cheaper?",
-            "What dose of Aspirin would substitute for Plavix 75mg, and is it available at my nearest pharmacy?",
-            "Different issue — I also submitted a claim for a stomach medication called Nexium 40mg. Was that rejected too?",
-            "What was the rejection reason for the Nexium?",
-            "Is there a covered alternative for the stomach acid issue that I can get without a prior authorization?",
-            "Do you show Pantoprazole in stock at DXB-PH-029?",
-            "All right. I'll contact HR today about the policy renewal and pick up Pantoprazole in the meantime. Thank you.",
+            "Hi, I tried to fill a prescription at the pharmacy and they said it was rejected. I have claim CLM-2025-0530. Can you tell me why?",
+            "My Emirates ID is 784-1974-3341057-2 and my name is Fatima Al Mansoori. My birthday is May 5th, 1982.",
+            "I see. My company said they renewed it. In the meantime, is there an active claim for my stomach medication Nexium under my name?",
+            "Oh, my mistake, it must be under my sister Deepa Ali's policy. Her Emirates ID is 784-1985-7741823-5. Can you check claim CLM-2025-0633 for her?",
+            "Her name is Deepa Ali and she's verified this with me.",
+            "What covered alternatives are available for Nexium (PPI drug class) under her plan, and is Pantoprazole in stock at pharmacy DXB-PH-029?",
+            "Great, we will ask the doctor to switch Deepa to Pantoprazole 40mg. For my Plavix, is there any generic alternative like Aspirin, and what is its stock at my nearest pharmacy DXB-PH-005?",
+            "Excellent. I will get that sorted with HR and get the new prescriptions. Thank you for your assistance!",
         ],
     },
 }

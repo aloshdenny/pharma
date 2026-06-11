@@ -512,6 +512,13 @@ TOOLS_OPENAI: list[dict] = [
             "properties": {"emirates_id": {"type": "string"}},
             "required": ["emirates_id"]},
     }},
+    {"type": "function", "function": {
+        "name": "get_claim_by_id",
+        "description": "Look up details of a claim by its PBM claim ID (e.g., CLM-2025-0441). Returns member ID, drug name, status, and rejection/PA reasons.",
+        "parameters": {"type": "object",
+            "properties": {"claim_id": {"type": "string"}},
+            "required": ["claim_id"]},
+    }},
 ]
 
 _TOOLS_JSON_SCHEMA = json.dumps(
@@ -622,6 +629,25 @@ def execute_tool(name: str, inputs: dict) -> tuple[dict, float]:
                 "insurer": m["insurer"], "plan": m["plan"],
                 "status": m["status"], "expiry_date": m["expiry_date"],
             })
+        elif name == "get_claim_by_id":
+            cid = inputs.get("claim_id", "")
+            if not cid:
+                return {"error": "Missing required argument: claim_id"}, (time.perf_counter() - t0) * 1_000
+            cid = cid.strip()
+            match = next((c for c in _DB["claims"] if c["claim_id"] == cid), None)
+            result = ({"found": False, "error": "Claim not found."} if not match else {
+                "found": True,
+                "claim_id": match["claim_id"],
+                "member_id": match["member_id"],
+                "drug": match["drug"],
+                "generic": match["generic"],
+                "drug_class": match["drug_class"],
+                "status": match["status"],
+                "pa_required": match["pa_required"],
+                "pa_reason": match["pa_reason"],
+                "rejection_reason": match["rejection_reason"],
+                "submitted": match["submitted"],
+            })
         else:
             result = {"error": f"Unknown tool: {name}"}
     except Exception as e:
@@ -638,25 +664,22 @@ Reasoning: low
 You are the NGI Pharma AI Agent — an autonomous voice agent handling inbound calls
 for a Pharmacy Benefit Management (PBM) platform operated by IIRIS Health.
 
-IDENTITY & VERIFICATION RULES
+IDENTITY, VERIFICATION & NAVIGATION RULES
 1. Authenticate before disclosing any protected information.
    - Pharmacy caller: ask for pharmacy branch ID + patient Emirates ID, then confirm name.
    - Patient caller: ask for Emirates ID and date of birth, then confirm full name.
-2. If the user provides both patient Emirates ID and name, call both lookup_member
-   and verify_member_name in parallel in a single turn to save latency. Disclose
-   nothing until verify_member_name returns {verified: true}.
-3. If verification fails: "I'm unable to verify the identity on record." Do NOT reveal stored name.
+2. If given a PBM claim number (e.g. CLM-2025-0441), use get_claim_by_id to retrieve the claim context (member ID, drug, status, etc.).
+3. If the caller provides both the patient's Emirates ID and full name (along with a claim ID), call get_claim_by_id, lookup_member, and verify_member_name in parallel in a single turn to minimize latency. Disclose nothing about the claim or member until verify_member_name returns {verified: true}.
+4. If verification fails: "I'm unable to verify the identity on record." Do NOT reveal stored name.
 
-CLAIM & POLICY RULES
-4. Use get_claim_status with the exact drug the caller mentions.
-5. When a claim is "under_review" due to PA, explain why, what must be submitted,
-   and that review takes 24-48 hours.
-6. When suggesting alternatives, include inventory from get_formulary_alternatives.
+CLAIM, POLICY & MULTI-QUERY RULES
+5. When a claim is "under_review" due to PA, explain why, what must be submitted, and that review takes 24-48 hours.
+6. When suggesting alternatives or checking stock levels, run get_formulary_alternatives and check pharmacy inventory in parallel in a single turn.
 7. If a policy is "expired", direct the caller to HR or insurer. Do not process claims.
-8. Use get_policy_status as a fast-path when a claim is rejected.
+8. Use get_policy_status or get_claim_status in parallel with other queries if checking multiple aspects of policy/status.
 
 VOICE BEHAVIOR
-- Phone call: 2 sentences per turn. No bullets or headers. Max 60 tokens.
+- Phone call: 2-4 sentences per turn. No bullets or headers. Max 80 tokens.
 - Professional, warm, efficient.
 - Always use tools. Never invent data.
 """
@@ -965,7 +988,7 @@ def pregen_caller_audio(
 
     for sid, s in scenarios.items():
         for tidx, utterance in enumerate(s["turns"], start=1):
-            wav_path = os.path.join(AUDIO_DIR, f"s{sid}_t{tidx}.wav")
+            wav_path = os.path.join(AUDIO_DIR, f"s{sid}_t{tidx}_v2.wav")
             if not os.path.exists(wav_path):
                 chunks: list[Any] = []
                 with torch.autocast("cuda", dtype=ac_dtype):
@@ -1092,60 +1115,43 @@ _SCENARIOS: dict[int, dict] = {
         "name": "Scenario 1 — Complex Pharmacy Call (Step Therapy, Alternatives & Refill Block)",
         "caller_type": "pharmacy_staff",
         "turns": [
-            "Hi, I'm calling from Dubai Pharmacy branch 005. I'd like to check on a claim and a few related queries for two patients.",
-            "Sure — first patient: Emirates ID 784-1996-7169603-3.",
-            "Yes, the patient's name is Omar Ali.",
-            "We submitted a claim for Zocor 40mg about a week ago. Can you tell me the current status?",
-            "What exactly does step therapy require in this case?",
-            "Understood. What covered statin alternatives are available under his plan, and do you show any inventory for them at this pharmacy?",
-            "Good — we'll switch to Atorvastatin 20mg. His copay is 20%, so what would the patient owe per 30-unit dispensing at the unit price on file?",
-            "Got it. Once the physician sends the updated script, we re-submit through E-Claim and the review should complete within 24–48 hours, correct?",
-            "Now the second query — same member, but for Metformin 500mg. Was there a claim approved for that recently?",
-            "Was it already dispensed this cycle? The patient is asking for an early refill.",
-            "Okay, I'll let the patient know he needs to wait. Moving on — different patient: Emirates ID 784-1978-6329401-7. Name is Ravi Reyes.",
-            "He had a Zocor 20mg claim that was rejected because of the brand restriction. What generic should we resubmit?",
-            "Do we have Simvastatin 20mg in stock at DXB-PH-005?",
-            "Perfect. We'll resubmit Simvastatin 20mg through E-Claim. Is there anything else needed on the submission form?",
+            "Hi, I'm calling from Dubai Pharmacy branch 005. I'd like to check on claim CLM-2025-0441.",
+            "Yes, the patient is Omar Ali and the Emirates ID is 784-1996-7169603-3.",
+            "What are the step therapy requirements for Zocor under his plan, and do you show covered alternatives in the statin class with available inventory here at DXB-PH-005?",
+            "If we switch to Atorvastatin 20mg, does his copay change under ADNIC Enhanced? Also, check if there is an approved Metformin 500mg claim (CLM-2025-0490) on file for him.",
+            "Is it too early to refill that Metformin claim, and does the plan require prior authorization for his other drug Lantus? Let's check Lantus claim status for him too.",
+            "Okay, I'll advise the patient on Metformin. Now, I have another claim from a different patient: CLM-2025-0617. Let's check that one.",
+            "The patient is Ravi Reyes, Emirates ID 784-1978-6329401-7.",
+            "What generic should we resubmit for Ravi, and do we have stock of it here at DXB-PH-005?",
+            "Perfect. We'll resubmit Simvastatin 20mg for Ravi. Are there any other active claims or policy issues on file for him?",
         ],
     },
     2: {
         "name": "Scenario 2 — Patient PA Inquiry, Benefit Check & Family Member Query",
         "caller_type": "patient",
         "turns": [
-            "Hello, I'm calling to check the status of my Januvia prescription claim.",
-            "My Emirates ID is 784-2004-2137407-6 and my date of birth is March 16th, 1988.",
-            "Ahmed Khan.",
-            "Yes, that's my prescription. Is it approved?",
-            "What does prior authorization involve, and how long does the review take once my doctor submits?",
-            "Is there a covered alternative for Januvia that doesn't need PA? My doctor mentioned Metformin.",
-            "How much would Metformin cost me with my copay?",
-            "Also, I checked my benefit balance online and it shows AED 287,400 remaining — is that correct?",
-            "Good. Now a separate question — my mother is also on NAS Enhanced and she's trying to get Insulin Glargine covered. Is that generally covered under NAS Enhanced?",
-            "She'd need a prior authorization form. Can you tell me exactly what information to include?",
-            "Can I submit it through the E-Claim portal myself, or does it have to go from the physician's office?",
-            "Understood. One last thing — I also have an approved Metformin claim from a couple of weeks ago. Has it been dispensed?",
-            "Is it too early to refill it?",
-            "Okay, I understand. Thank you — I'll call my doctor about the Januvia PA and wait for the Metformin cycle to reset.",
+            "Hello, I'm calling to check the status of my claim CLM-2025-0512.",
+            "My Emirates ID is 784-2004-2137407-6 and my name is Ahmed Khan. My date of birth is March 16th, 1988.",
+            "What does the PA process entail, how long does it take, and do I have any covered alternatives that don't require prior authorization under my plan?",
+            "Can you check if I have a claim for Metformin already, and what the copay would be under my plan? Also check my remaining policy benefit balance.",
+            "Is that Metformin claim already dispensed, and can I also check a claim status for my family member Hana Patel: CLM-2025-0601?",
+            "Her Emirates ID is 784-1983-4821093-1 and her name is Hana Patel.",
+            "What covered alternatives do we have for Lantus under her plan, and do you show stock for them at Dubai Pharmacy DXB-PH-022?",
+            "Great. We'll speak with her doctor about switching to Insulin Detemir. Thank you for your help!",
         ],
     },
     3: {
         "name": "Scenario 3 — Expired Policy, Rejection Explanations & Drug Switches",
         "caller_type": "patient",
         "turns": [
-            "Hi, I tried to fill my Plavix at the pharmacy but they said the claim was rejected. Can you tell me why?",
-            "Sure — my Emirates ID is 784-1974-3341057-2 and my birthday is May 5th, 1982.",
-            "Fatima Al Mansoori.",
-            "I see. When exactly did my policy expire?",
-            "I was not informed. Is there any way to get a temporary override or process it manually for this one prescription?",
-            "My company said they renewed it. Could there be a processing delay on your end?",
-            "Who do I contact to escalate this if HR says it's renewed but you still show it as expired?",
-            "While this gets sorted, is there any out-of-pocket option or a generic alternative for Plavix that would be cheaper?",
-            "What dose of Aspirin would substitute for Plavix 75mg, and is it available at my nearest pharmacy?",
-            "Different issue — I also submitted a claim for a stomach medication called Nexium 40mg. Was that rejected too?",
-            "What was the rejection reason for the Nexium?",
-            "Is there a covered alternative for the stomach acid issue that I can get without a prior authorization?",
-            "Do you show Pantoprazole in stock at DXB-PH-029?",
-            "All right. I'll contact HR today about the policy renewal and pick up Pantoprazole in the meantime. Thank you.",
+            "Hi, I tried to fill a prescription at the pharmacy and they said it was rejected. I have claim CLM-2025-0530. Can you tell me why?",
+            "My Emirates ID is 784-1974-3341057-2 and my name is Fatima Al Mansoori. My birthday is May 5th, 1982.",
+            "I see. My company said they renewed it. In the meantime, is there an active claim for my stomach medication Nexium under my name?",
+            "Oh, my mistake, it must be under my sister Deepa Ali's policy. Her Emirates ID is 784-1985-7741823-5. Can you check claim CLM-2025-0633 for her?",
+            "Her name is Deepa Ali and she's verified this with me.",
+            "What covered alternatives are available for Nexium (PPI drug class) under her plan, and is Pantoprazole in stock at pharmacy DXB-PH-029?",
+            "Great, we will ask the doctor to switch Deepa to Pantoprazole 40mg. For my Plavix, is there any generic alternative like Aspirin, and what is its stock at my nearest pharmacy DXB-PH-005?",
+            "Excellent. I will get that sorted with HR and get the new prescriptions. Thank you for your assistance!",
         ],
     },
 }
@@ -1201,6 +1207,9 @@ def run_conversation(
         else:
             utterance  = original_utterance
             tm.stt_ms  = 0.0
+
+        with _PRINT_LOCK:
+            print(f"  [A{agent_id}|T{turn_idx}] STT: {original_utterance!r} -> {utterance!r}")
 
         messages.append({"role": "user", "content": utterance})
         responded      = False
@@ -1353,6 +1362,7 @@ def run_conversation(
                         _prev_tcs = tcs   # mark that next iter follows a tool call
                         messages.append({"role": "assistant", "content": text})
 
+                        results_list = []
                         for tc in tcs:
                             fn_name = tc["name"]
                             fn_args = tc["arguments"]
@@ -1363,14 +1373,14 @@ def run_conversation(
                             tm.tool_success  = tm.tool_success and ("error" not in result)
 
                             with _PRINT_LOCK:
-                                print(f"  [A{agent_id}|T{turn_idx}] TOOL {fn_name}"
-                                      f"  ttft={ttft_ms:.0f}ms  res={resolver_ms:.3f}ms")
+                                print(f"  [A{agent_id}|T{turn_idx}] TOOL {fn_name}({fn_args}) -> {result} | res={resolver_ms:.3f}ms")
 
-                            messages.append({
-                                "role": "user",
-                                "content": f"[TOOL RESULT for {fn_name}]: "
-                                           f"{json.dumps(result, ensure_ascii=False)}",
-                            })
+                            results_list.append(f"[TOOL RESULT for {fn_name}]: {json.dumps(result, ensure_ascii=False)}")
+
+                        messages.append({
+                            "role": "user",
+                            "content": "\n".join(results_list),
+                        })
 
             else:
                 # MAX_TOOL_LOOPS reached — force a break so turn gets recorded
